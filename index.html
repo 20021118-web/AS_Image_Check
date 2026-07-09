@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AS 부품 이미지 자동 매칭 스튜디오</title>
   <link rel="preconnect" href="https://cdn.jsdelivr.net" />
-  <link rel="stylesheet" href="styles.css?v=9" />
+  <link rel="stylesheet" href="styles.css?v=11" />
   <!-- xlsx 압축 해제용 -->
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <!-- 결과 zip 생성용 (JSZip 재사용) · 파일 저장 -->
@@ -79,7 +79,10 @@
             <p class="hint"><b>AI 의미 유사도</b>와 <b>ORB 특징점</b>을 결합한 자동 매칭 결과입니다. 필요하면 카드에서 직접 바꿀 수 있어요.
               AI 유사도 <b id="ai-threshold-label">83</b>% 또는 ORB <b id="threshold-label">15</b>점 이상이면 <span class="badge ok">성공</span>.</p>
           </div>
-          <div class="match-stats" id="match-stats"></div>
+          <div class="match-side">
+            <div class="match-stats" id="match-stats"></div>
+            <button class="accent-btn hidden" id="btn-reorb" title="AI 결과가 아쉬우면 ORB 특징점으로 한 번 더 정밀 분석">🔍 ORB 정밀 재분석</button>
+          </div>
         </div>
         <div class="progress-wrap" id="match-progress-wrap">
           <div class="progress"><div class="bar" id="match-bar"></div></div>
@@ -173,6 +176,6 @@
     </div>
   </div>
 
-  <script type="module" src="app.js?v=9"></script>
+  <script type="module" src="app.js?v=11"></script>
 </body>
 </html>
