@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AS 부품 이미지 자동 매칭 스튜디오</title>
   <link rel="preconnect" href="https://cdn.jsdelivr.net" />
-  <link rel="stylesheet" href="styles.css?v=2" />
+  <link rel="stylesheet" href="styles.css?v=9" />
   <!-- xlsx 압축 해제용 -->
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <!-- 결과 zip 생성용 (JSZip 재사용) · 파일 저장 -->
@@ -147,11 +147,14 @@
         <span>AI 유사도 기준 (%)</span>
         <input type="number" id="cfg-aithreshold" min="1" max="99" value="83" />
       </label>
+      <label class="toggle" style="margin: 2px 0 12px;">
+        <input type="checkbox" id="cfg-useorb" /> ORB 정밀 검증 사용 (정확도 ↑, 속도 ↓ — 느리면 끄세요)
+      </label>
       <label class="field">
         <span>ORB 특징점 기준 점수 (inlier)</span>
         <input type="number" id="cfg-threshold" min="1" max="200" value="15" />
       </label>
-      <p class="modal-note">둘 중 하나만 넘어도 "성공". AI 기준을 낮추면 더 잘 매칭되지만 오매칭이 늘 수 있습니다.</p>
+      <p class="modal-note">기본은 <b>AI 전용(빠름)</b>입니다. ORB 정밀 검증을 켜면 더 정확하지만 사진이 많으면 느려질 수 있어요. 둘 중 하나만 넘어도 "성공".</p>
 
       <div class="modal-actions">
         <button class="secondary-btn" id="btn-close-settings">저장 · 닫기</button>
@@ -170,6 +173,6 @@
     </div>
   </div>
 
-  <script type="module" src="app.js?v=2"></script>
+  <script type="module" src="app.js?v=9"></script>
 </body>
 </html>
