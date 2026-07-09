@@ -5,18 +5,23 @@
 
 ## 무엇을 하나
 
-1. **엑셀 부품 리스트 업로드** — 각 시트의 `D열(부품 이미지)` + `E열(서비스 코드)`를 **4행부터** 읽습니다. (파이썬 원본과 동일)
+1. **엑셀 부품 리스트 업로드** — 각 시트의 `D열(부품 이미지)` + `E열(서비스 코드)`를 **4행부터** 읽습니다. (열·시작행은 ⚙ 설정에서 변경 가능)
 2. **원본 사진 업로드** — 고화질 원본 사진들.
-3. **자동 매칭** — OpenCV(WASM)의 특징점 매칭(RANSAC inlier 수)으로 엑셀 썸네일 ↔ 원본 사진을 짝지어 줍니다. 원본 사진을 **0·90·180·270°로 돌려가며** 각각 비교해 가장 잘 맞는 각도의 점수를 채택하고, 카드에 그 각도를 표시합니다(예: `94점 · 90° 회전`). 기준 점수(기본 15) 이상이면 성공. 카드에서 후보를 직접 바꿀 수도 있습니다.
+3. **자동 매칭 (AI + 특징점 결합)** — 두 신호를 함께 씁니다.
+   - **AI 의미 유사도**: CLIP 이미지 임베딩(브라우저 WASM)으로 "같은 물건일 가능성"을 코사인 유사도로 측정. **저해상도·저텍스처·조명 차이에 강함.**
+   - **ORB 특징점**: OpenCV(WASM)로 국소 특징점을 RANSAC 매칭(inlier 수). 원본 사진을 **0·90·180·270° 회전**해 가장 잘 맞는 각도 채택. 저해상도 대응을 위해 **공통 해상도 업스케일 + CLAHE 대비 보정** 적용.
+   - AI 유사도 ≥ 기준(기본 83%) **또는** ORB inlier ≥ 기준(기본 15) 이면 **성공**. 카드에 `AI 88% · ORB 154 · 180°`처럼 표시하고, 후보를 직접 바꿀 수 있습니다.
+   - 진행 상황은 **% 진행바**로, 모델 최초 다운로드는 **% 오버레이**로 보여줍니다.
 4. **배경 제거 · 내보내기** — 확정된 사진을 AI로 배경 제거 → 흰 배경 합성 → `{서비스코드}.png` 로 만들고, `엑셀파일명/코드.png` 구조의 **ZIP**으로 다운로드합니다.
 
 ## 파이썬 원본과의 대응
 
 | 파이썬 (`Photo_Val.py`) | 웹 버전 | 비고 |
 |---|---|---|
-| `openpyxl` + `openpyxl_image_loader` | `lib/xlsx.js` (JSZip 로 xlsx 직접 파싱) | D열 이미지 · E열 코드 · 4행 시작 동일 |
-| `cv2.SIFT` + `BFMatcher` + `findHomography(RANSAC)` | `lib/matcher.js` (`@techstark/opencv-js`) | **ORB** 사용 — 브라우저 WASM 표준 빌드에 SIFT 미포함. ORB는 SIFT의 무료 대체 알고리즘으로 동등한 매칭 성능 |
-| `MIN_INLIER_COUNT = 15` | 설정(⚙)에서 조절 | 동일 기본값 |
+| `openpyxl` + `openpyxl_image_loader` | `lib/xlsx.js` (JSZip 로 xlsx 직접 파싱) | D열 이미지 · E열 코드 · 4행 시작 (설정에서 변경 가능) |
+| `cv2.SIFT` + `BFMatcher` + `findHomography(RANSAC)` | `lib/matcher.js` (`@techstark/opencv-js`) | **강화 ORB**(3000 특징점·10 피라미드·CLAHE·업스케일). 브라우저 WASM 빌드에 SIFT 미포함이라 ORB 사용 |
+| (없음 — 신규) | `lib/embedder.js` (`@huggingface/transformers`, CLIP ViT-B/32) | **AI 의미 유사도 매칭** — 저해상도 썸네일 대응 핵심 |
+| `MIN_INLIER_COUNT = 15` | 설정(⚙)에서 AI %·ORB 점수 조절 | |
 | `rembg` (U²-Net/ISNet) | `@imgly/background-removal` (ISNet 계열 ONNX, 브라우저 WASM) | 배경 제거 후 흰 배경 합성 동일 |
 | 폴더 저장 | ZIP 다운로드 | `{엑셀명}/{코드}.png` |
 
@@ -52,10 +57,12 @@ python -m http.server 5599
 
 ## 사용 팁 / 주의
 
-- **최초 실행 시**: 매칭 엔진(OpenCV WASM, ~9MB)과 AI 배경제거 모델(수십 MB)을 CDN에서 처음 한 번 내려받습니다. 이후에는 브라우저 캐시로 빠르게 동작합니다. (인터넷 연결 필요)
+- **최초 실행 시**: 매칭 엔진(OpenCV WASM ~9MB), AI 매칭 모델(CLIP, 수십 MB), AI 배경제거 모델(수십 MB)을 CDN에서 처음 한 번 내려받습니다. 다운로드는 **% 오버레이**로 표시되며, 이후에는 브라우저 캐시로 빠르게 동작합니다. (인터넷 연결 필요)
 - **처리량**: 모든 계산이 사용자 PC(브라우저)에서 일어납니다. 수십~수백 장은 무리 없으나, 매우 많은 양은 시간이 걸립니다.
-- **매칭이 잘 안 될 때**: ⚙ 설정에서 기준 점수를 낮춰 보세요(예: 10). 낮추면 매칭률은 오르지만 오매칭 가능성도 커집니다. 카드의 **후보 변경**으로 직접 확정할 수 있습니다.
+- **엑셀 양식이 다르면**: ⚙ 설정에서 **이미지 열 / 코드 열 / 시작 행**을 바꾸세요(예: 이미지 C열, 코드 D열, 3행 시작).
+- **매칭 기준 조절**: ⚙ 설정에서 **AI 유사도 기준(%)**·**ORB 점수 기준**을 조절합니다. 오매칭이 많으면 AI 기준을 올리고(예: 87%), 매칭이 부족하면 낮추세요. 특히 **같은 제품의 부품끼리는 AI 유사도가 전반적으로 높게** 나오므로, 원본 사진을 부품별로 충분히 넣을수록 정확해집니다. 카드의 **후보 변경**으로 직접 확정할 수 있습니다.
 - **배경 제거 없이**: 3단계에서 "AI 배경 제거 사용" 체크를 끄면 배경 제거 없이 흰 배경 합성 + 코드 명명만 수행합니다.
+- **업데이트 반영**: 파일을 재배포한 뒤 화면이 안 바뀌면 브라우저 캐시 때문입니다. `Ctrl+Shift+R` 로 강력 새로고침하거나, `index.html`·`app.js` 의 `?v=2` 숫자를 올리면(예: `?v=3`) 최신본이 강제로 로드됩니다.
 
 ## 파일 구성
 
@@ -65,8 +72,9 @@ WebApp/
 ├─ styles.css      # 디자인
 ├─ app.js          # 전체 흐름 오케스트레이션 (ES module)
 └─ lib/
-   ├─ xlsx.js      # 엑셀 셀 삽입 이미지 + 코드 추출
-   └─ matcher.js   # OpenCV(ORB) 특징점 매칭
+   ├─ xlsx.js      # 엑셀 셀 삽입 이미지 + 코드 추출 (열/행 지정 가능)
+   ├─ matcher.js   # OpenCV 강화 ORB 특징점 매칭 (회전·CLAHE·업스케일)
+   └─ embedder.js  # CLIP AI 의미 유사도 매칭
 ```
 
 ## 사용 라이브러리 (모두 CDN, 오픈소스)
@@ -74,4 +82,5 @@ WebApp/
 - [JSZip](https://stuk.github.io/jszip/) — xlsx 파싱 / 결과 ZIP 생성
 - [FileSaver.js](https://github.com/eligrey/FileSaver.js) — 다운로드
 - [@techstark/opencv-js](https://www.npmjs.com/package/@techstark/opencv-js) — OpenCV WASM (특징점 매칭)
+- [@huggingface/transformers](https://www.npmjs.com/package/@huggingface/transformers) — CLIP 이미지 임베딩 (AI 의미 유사도 매칭)
 - [@imgly/background-removal](https://www.npmjs.com/package/@imgly/background-removal) — 브라우저 AI 배경 제거
