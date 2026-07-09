@@ -131,8 +131,18 @@ body {
 .secondary-btn:hover { background: #e2e8ee; }
 .match-toolbar .primary-btn, .export-actions .primary-btn { margin-left: 0; }
 
+/* ORB 정밀 재분석 — 눈에 띄는 강조 버튼 */
+.accent-btn {
+  background: #fff; color: var(--blue-dark); border: 2px solid var(--blue);
+  border-radius: 10px; padding: 10px 16px; font-size: 14px; font-weight: 700; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px; transition: .15s;
+}
+.accent-btn:hover { background: var(--blue-soft); }
+.accent-btn:disabled { opacity: .55; cursor: default; }
+
 /* ===== 매칭 보드 ===== */
 .match-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.match-side { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
 .match-stats { display: flex; gap: 10px; }
 .stat { background: #f7f9fb; border-radius: 12px; padding: 10px 16px; text-align: center; min-width: 78px; }
 .stat b { display: block; font-size: 20px; }
