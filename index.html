@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AS 부품 이미지 자동 매칭 스튜디오</title>
   <link rel="preconnect" href="https://cdn.jsdelivr.net" />
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=2" />
   <!-- xlsx 압축 해제용 -->
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <!-- 결과 zip 생성용 (JSZip 재사용) · 파일 저장 -->
@@ -27,7 +27,7 @@
         </div>
         <div class="engines">
           <span class="chip" id="chip-cv"><span class="dot"></span> 매칭 엔진</span>
-          <span class="chip" id="chip-ai"><span class="dot"></span> AI 배경제거</span>
+          <span class="chip" id="chip-ai"><span class="dot"></span> AI</span>
           <button class="ghost-btn" id="btn-settings" title="설정">⚙</button>
         </div>
       </div>
@@ -44,7 +44,7 @@
         <div class="grid-2">
           <div>
             <h2 class="panel-title">① 엑셀 부품 리스트</h2>
-            <p class="hint">D열(부품 이미지) · E열(서비스 코드), 4행부터 읽습니다. 여러 개 업로드 가능.</p>
+            <p class="hint"><b id="hint-imgcol">D</b>열(부품 이미지) · <b id="hint-codecol">E</b>열(서비스 코드), <b id="hint-startrow">4</b>행부터 읽습니다. 열·시작행은 ⚙ 설정에서 변경. 여러 개 업로드 가능.</p>
             <label class="dropzone" id="dz-excel">
               <input type="file" accept=".xlsx" multiple hidden id="in-excel" />
               <div class="dz-icon">📄</div>
@@ -76,10 +76,14 @@
         <div class="match-head">
           <div>
             <h2 class="panel-title">자동 매칭 결과</h2>
-            <p class="hint">유사도(inlier 점수) 기준 자동 매칭 결과입니다. 필요하면 카드에서 직접 바꿀 수 있어요.
-              기준 점수 <b id="threshold-label">15</b>점 이상이면 <span class="badge ok">성공</span>.</p>
+            <p class="hint"><b>AI 의미 유사도</b>와 <b>ORB 특징점</b>을 결합한 자동 매칭 결과입니다. 필요하면 카드에서 직접 바꿀 수 있어요.
+              AI 유사도 <b id="ai-threshold-label">83</b>% 또는 ORB <b id="threshold-label">15</b>점 이상이면 <span class="badge ok">성공</span>.</p>
           </div>
           <div class="match-stats" id="match-stats"></div>
+        </div>
+        <div class="progress-wrap" id="match-progress-wrap">
+          <div class="progress"><div class="bar" id="match-bar"></div></div>
+          <div class="progress-label" id="match-label">매칭 준비 중…</div>
         </div>
         <div class="match-toolbar">
           <label class="toggle"><input type="checkbox" id="only-success" /> 성공 항목만 내보내기</label>
@@ -120,17 +124,52 @@
   <div class="modal hidden" id="modal-settings">
     <div class="modal-card">
       <h3>설정</h3>
+
+      <div class="field-group-title">엑셀 열 지정</div>
+      <div class="field-row">
+        <label class="field">
+          <span>이미지 열</span>
+          <input type="text" id="cfg-imgcol" value="D" maxlength="3" />
+        </label>
+        <label class="field">
+          <span>코드 열</span>
+          <input type="text" id="cfg-codecol" value="E" maxlength="3" />
+        </label>
+        <label class="field">
+          <span>시작 행</span>
+          <input type="number" id="cfg-startrow" min="1" max="10000" value="4" />
+        </label>
+      </div>
+      <p class="modal-note">엑셀 양식이 다르면 여기서 열(A, B, C…)과 시작 행을 바꾸세요. 예: 이미지가 C열, 코드가 D열.</p>
+
+      <div class="field-group-title">매칭 기준</div>
       <label class="field">
-        <span>매칭 기준 점수 (inlier)</span>
+        <span>AI 유사도 기준 (%)</span>
+        <input type="number" id="cfg-aithreshold" min="1" max="99" value="83" />
+      </label>
+      <label class="field">
+        <span>ORB 특징점 기준 점수 (inlier)</span>
         <input type="number" id="cfg-threshold" min="1" max="200" value="15" />
       </label>
-      <p class="modal-note">기본 15점. 낮추면 더 잘 매칭되지만 오매칭이 늘 수 있습니다.</p>
+      <p class="modal-note">둘 중 하나만 넘어도 "성공". AI 기준을 낮추면 더 잘 매칭되지만 오매칭이 늘 수 있습니다.</p>
+
       <div class="modal-actions">
-        <button class="secondary-btn" id="btn-close-settings">닫기</button>
+        <button class="secondary-btn" id="btn-close-settings">저장 · 닫기</button>
       </div>
     </div>
   </div>
 
-  <script type="module" src="app.js"></script>
+  <!-- 모델 다운로드/처리 로딩 오버레이 -->
+  <div class="overlay hidden" id="overlay">
+    <div class="overlay-card">
+      <div class="spinner"></div>
+      <div class="overlay-title" id="overlay-title">모델 다운로드 중…</div>
+      <div class="overlay-pct" id="overlay-pct">0%</div>
+      <div class="progress"><div class="bar" id="overlay-bar"></div></div>
+      <div class="overlay-sub" id="overlay-sub">최초 1회만 받으면 이후에는 캐시로 빠르게 실행됩니다.</div>
+    </div>
+  </div>
+
+  <script type="module" src="app.js?v=2"></script>
 </body>
 </html>
