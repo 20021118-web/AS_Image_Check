@@ -7,12 +7,12 @@
  *   3) @imgly AI 로 배경 제거 → 흰 배경 합성 → {코드}.png ZIP 다운로드
  */
 
-import { parseWorkbook } from './lib/xlsx.js?v=2';
+import { parseWorkbook } from './lib/xlsx.js?v=9';
 import {
   computeFeatures, computeFeaturesAllRotations, releaseFeatures, releaseFeatureList,
   matchBestRotation, getDetectorName, MIN_INLIER_COUNT,
-} from './lib/matcher.js?v=2';
-import { loadEmbedder, embed, cosine } from './lib/embedder.js?v=2';
+} from './lib/matcher.js?v=9';
+import { loadEmbedder, embed, cosine, getDevice } from './lib/embedder.js?v=9';
 
 /* ========== 상태 ========== */
 const state = {
@@ -22,6 +22,7 @@ const state = {
   results: [],      // {folder, name, dataUrl}
   threshold: MIN_INLIER_COUNT, // ORB inlier 기준
   aiThreshold: 0.83,           // AI 코사인 유사도 기준
+  useOrb: false,               // ORB 정밀 검증 사용 여부 (기본 끔 = 가볍고 안 멈춤)
   imgCol: 'D',                 // 이미지 열
   codeCol: 'E',                // 코드 열
   startRow: 4,                 // 시작 행
@@ -137,10 +138,16 @@ async function ensureEmbedder() {
       const c = Math.floor(pct);
       if (c % 10 === 0) setChip('#chip-ai', `AI 매칭 모델 ${c}%`, '');
     });
-    setOverlay(100, '모델 초기화 완료');
+    // 워밍업: 첫 추론(특히 WebGPU 셰이더 컴파일)의 큰 지연을 로딩 화면에서 미리 소화 → 매칭 중 멈춤 방지
+    setOverlay(100, '엔진 워밍업 중…');
+    try {
+      const c = el('canvas'); c.width = 32; c.height = 32;
+      const cx = c.getContext('2d'); cx.fillStyle = '#ccc'; cx.fillRect(0, 0, 32, 32);
+      await embed(c.toDataURL('image/png'));
+    } catch (e) { /* 무시 */ }
     state.aiReady = true;
-    setChip('#chip-ai', 'AI 매칭 준비됨', 'ready');
-    log('✔ AI 매칭 모델 준비 완료 (CLIP)', 'ok');
+    setChip('#chip-ai', 'AI 매칭 준비됨 (' + getDevice() + ')', 'ready');
+    log('✔ AI 매칭 모델 준비 완료 (CLIP · ' + getDevice() + ')', 'ok');
     hideOverlay();
     return true;
   } catch (e) {
@@ -173,6 +180,23 @@ function renderExcelList() {
   updateCounts();
 }
 
+/** 표시용 작은 썸네일 dataURL 생성 (원본은 그대로 두고 화면 메모리만 절약) */
+function makeThumb(dataUrl, max = 240) {
+  return new Promise((res) => {
+    const img = new Image();
+    img.onload = () => {
+      const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+      const s = Math.min(1, max / Math.max(w, h));
+      const cw = Math.max(1, Math.round(w * s)), ch = Math.max(1, Math.round(h * s));
+      const c = el('canvas'); c.width = cw; c.height = ch;
+      c.getContext('2d').drawImage(img, 0, 0, cw, ch);
+      try { res(c.toDataURL('image/jpeg', 0.8)); } catch (e) { res(dataUrl); }
+    };
+    img.onerror = () => res(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
 /* ========== 업로드: 사진 ========== */
 function addPhotoFiles(files) {
   const imgExt = /\.(png|jpe?g|webp)$/i;
@@ -180,8 +204,10 @@ function addPhotoFiles(files) {
     if (!imgExt.test(f.name)) continue;
     if (state.photos.some((p) => p.name === f.name)) continue;
     const reader = new FileReader();
-    reader.onload = () => {
-      state.photos.push({ name: f.name, dataUrl: reader.result, features: null, emb: null });
+    reader.onload = async () => {
+      const dataUrl = reader.result;
+      const thumb = await makeThumb(dataUrl, 240);
+      state.photos.push({ name: f.name, dataUrl, thumb, features: null, emb: null });
       renderPhotoList();
     };
     reader.readAsDataURL(f);
@@ -192,7 +218,7 @@ function renderPhotoList() {
   box.innerHTML = '';
   state.photos.forEach((p, i) => {
     const t = el('div', 't');
-    t.appendChild(el('img')).src = p.dataUrl;
+    t.appendChild(el('img')).src = p.thumb || p.dataUrl;
     const rm = el('button', 'rm', '✕');
     rm.onclick = () => { state.photos.splice(i, 1); renderPhotoList(); };
     t.appendChild(rm);
@@ -246,12 +272,15 @@ async function runMatching() {
 
   // 0) AI 매칭 모델 준비 (실패해도 ORB 로 진행)
   await ensureEmbedder();
+  // ORB 정밀 검증은 옵션(기본 끔). AI 가 없으면 어쩔 수 없이 ORB 사용.
+  const useOrbNow = state.useOrb || !state.aiReady;
+  log(useOrbNow ? '  · ORB 정밀 검증: 사용' : '  · ORB 정밀 검증: 꺼짐 (AI 전용, 가벼움)', 'dim');
 
-  // 1) 원본 사진 분석: ORB 특징점(4방향) + AI 임베딩
-  log(`▶ [1단계] 원본 사진 ${state.photos.length}장 분석 중… (ORB 4방향 + AI 임베딩)`);
+  // 1) 원본 사진 분석: AI 임베딩(워커) + (옵션) ORB 특징점
+  log(`▶ [1단계] 원본 사진 ${state.photos.length}장 분석 중…`);
   for (let i = 0; i < state.photos.length; i++) {
     const p = state.photos[i];
-    if (!p.features) p.features = await computeFeaturesAllRotations(p.dataUrl);
+    if (useOrbNow && !p.features) p.features = await computeFeatures(p.dataUrl);
     if (state.aiReady && !p.emb) { try { p.emb = await embed(p.dataUrl); } catch (e) {} }
     setMatchProgress(0.15 * ((i + 1) / state.photos.length), `[1/3] 원본 사진 분석 ${i + 1}/${state.photos.length}`);
     await tick();
@@ -291,30 +320,44 @@ async function runMatching() {
   }
 
   // 3) 각 엑셀 이미지 → 전체 사진과 매칭 (AI 유사도 + ORB 회전 매칭 결합)
-  log(`▶ [3단계] 매칭 계산 (${state.pairs.length}건) — ${state.aiReady ? 'AI 유사도 + ORB' : 'ORB 만'}`);
+  log(`▶ [3단계] 매칭 계산 (${state.pairs.length}건) — ${state.aiReady ? 'AI 유사도 + 상위 후보 ORB 검증' : 'ORB 만'}`);
   const N = state.pairs.length;
+  const K = Math.min(5, state.photos.length); // ORB 로 검증할 AI 상위 후보 수
   for (let pi = 0; pi < N; pi++) {
     const pair = state.pairs[pi];
-    const f = await computeFeatures(pair.imageDataUrl);
-    let qEmb = null;
-    if (state.aiReady) { try { qEmb = await embed(pair.imageDataUrl); } catch (e) {} }
+    let scored;
 
-    const scored = state.photos.map((p, idx) => {
-      const r = matchBestRotation(f, p.features);       // ORB inlier (최적 회전)
-      const ai = (qEmb && p.emb) ? cosine(qEmb, p.emb) : null; // AI 코사인 유사도
-      return { idx, score: r.score, deg: r.deg, ai };
-    });
-    releaseFeatures(f);
+    if (state.aiReady) {
+      let qEmb = null;
+      try { qEmb = await embed(pair.imageDataUrl); } catch (e) {}
+      await tick(); // 무거운 연산 사이마다 화면 양보 → 멈춤(긴 블로킹) 방지
+      // 1) AI 코사인으로 전체 랭킹 (가벼운 연산)
+      scored = state.photos.map((p, idx) => ({ idx, ai: (qEmb && p.emb) ? cosine(qEmb, p.emb) : 0, score: -1, deg: 0 }));
+      scored.sort((a, b) => b.ai - a.ai);
+      // 2) (옵션) 최상위 AI 후보만 ORB 회전 검증 — 무거운 매칭을 건당 1회로 최소화
+      if (useOrbNow && scored.length && scored[0].ai >= 0.5) {
+        const qRot = await computeFeaturesAllRotations(pair.imageDataUrl);
+        await tick();
+        const r = matchBestRotation(state.photos[scored[0].idx].features, qRot);
+        scored[0].score = r.score; scored[0].deg = r.deg;
+        releaseFeatureList(qRot);
+      }
+    } else {
+      // AI 미사용(폴백): 전체 ORB 매칭
+      const qRot = await computeFeaturesAllRotations(pair.imageDataUrl);
+      scored = state.photos.map((p, idx) => { const r = matchBestRotation(p.features, qRot); return { idx, score: r.score, deg: r.deg, ai: null }; });
+      releaseFeatureList(qRot);
+      scored.sort((a, b) => b.score - a.score);
+    }
 
-    // AI 가 있으면 AI 우선 정렬(동점 시 ORB), 없으면 ORB 정렬
-    scored.sort((a, b) => (state.aiReady ? (b.ai - a.ai) || (b.score - a.score) : b.score - a.score));
     pair.candidates = scored;
     applyTop(pair, scored[0]);
 
     const st = pair.auto ? 'ok' : 'warn';
     const rot = pair.matchDeg ? ` ${pair.matchDeg}°` : '';
-    const aiTxt = pair.matchAi != null ? `AI ${(pair.matchAi * 100).toFixed(0)}% · ` : '';
-    log(`  [${pair.code}] ${aiTxt}ORB ${pair.maxScore}점${rot} ${pair.auto ? '✔' : '(기준 미달)'}`, st);
+    const aiTxt = pair.matchAi != null ? `AI ${(pair.matchAi * 100).toFixed(0)}%` : '';
+    const orbTxt = pair.maxScore >= 0 ? ` · ORB ${pair.maxScore}점${rot}` : '';
+    log(`  [${pair.code}] ${aiTxt}${orbTxt} ${pair.auto ? '✔' : '(기준 미달)'}`, st);
     renderCard(pair);
     setMatchProgress(0.2 + 0.8 * ((pi + 1) / N), `[3/3] 매칭 계산 ${pi + 1}/${N} (${Math.round((pi + 1) / N * 100)}%)`);
     await tick();
@@ -354,10 +397,10 @@ function renderCard(pair) {
     <div class="mcard-body">
       <div class="mimg"><img src="${pair.imageDataUrl}" alt=""></div>
       <div class="arrow">➜</div>
-      <div class="mimg ${photo ? '' : 'empty'}">${photo ? `<img src="${photo.dataUrl}">` : '없음'}</div>
+      <div class="mimg ${photo ? '' : 'empty'}">${photo ? `<img src="${photo.thumb || photo.dataUrl}" loading="lazy">` : '없음'}</div>
     </div>
     <div class="mcard-foot">
-      <span class="score">${pair.matchAi != null ? `AI <b>${(pair.matchAi * 100).toFixed(0)}%</b> · ` : ''}ORB <b>${pair.maxScore < 0 ? 0 : pair.maxScore}</b>${pair.matchDeg ? ` · ${pair.matchDeg}°` : ''}</span>
+      <span class="score">${pair.matchAi != null ? `AI <b>${(pair.matchAi * 100).toFixed(0)}%</b>` : ''}${pair.maxScore >= 0 ? `${pair.matchAi != null ? ' · ' : ''}ORB <b>${pair.maxScore}</b>${pair.matchDeg ? ` · ${pair.matchDeg}°` : ''}` : ''}</span>
       ${status}
       <button class="link-btn" data-act="toggle-cand">후보 변경</button>
     </div>
@@ -391,7 +434,7 @@ function fillCandidates(pair, row) {
     const p = state.photos[c.idx];
     const cand = el('div', 'cand' + (c.idx === pair.selectedPhotoIdx && !pair.excluded ? ' sel' : ''));
     const aiTxt = c.ai != null ? `AI ${(c.ai * 100).toFixed(0)}%` : `${c.score}점`;
-    cand.innerHTML = `<img src="${p.dataUrl}"><small>${aiTxt}${c.deg ? ` · ${c.deg}°` : ''}</small>`;
+    cand.innerHTML = `<img src="${p.thumb || p.dataUrl}" loading="lazy"><small>${aiTxt}${c.deg ? ` · ${c.deg}°` : ''}</small>`;
     cand.onclick = () => {
       applyTop(pair, c);
       pair.excluded = false; // 사용자가 직접 선택하면 포함
@@ -490,7 +533,7 @@ async function runExport() {
     }
 
     state.results.push({ folder: t.folder, name: t.code + '.png', dataUrl: pngDataUrl });
-    addResultCard(t.code, pngDataUrl);
+    addResultCard(t.code, await makeThumb(pngDataUrl, 200)); // 표시는 썸네일, ZIP 은 원본
     await tick();
   }
 
@@ -530,6 +573,7 @@ $('#btn-settings').onclick = () => {
   $('#cfg-startrow').value = state.startRow;
   $('#cfg-aithreshold').value = Math.round(state.aiThreshold * 100);
   $('#cfg-threshold').value = state.threshold;
+  $('#cfg-useorb').checked = state.useOrb;
   $('#modal-settings').classList.remove('hidden');
 };
 $('#btn-close-settings').onclick = () => {
@@ -544,6 +588,7 @@ $('#btn-close-settings').onclick = () => {
   if (ai > 0 && ai < 100) state.aiThreshold = ai / 100;
   const v = parseInt($('#cfg-threshold').value, 10);
   if (v > 0) state.threshold = v;
+  state.useOrb = $('#cfg-useorb').checked;
 
   // 안내 라벨 갱신
   $('#hint-imgcol').textContent = state.imgCol;
