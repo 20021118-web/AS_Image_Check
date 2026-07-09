@@ -7,12 +7,12 @@
  *   3) @imgly AI 로 배경 제거 → 흰 배경 합성 → {코드}.png ZIP 다운로드
  */
 
-import { parseWorkbook } from './lib/xlsx.js?v=9';
+import { parseWorkbook } from './lib/xlsx.js?v=11';
 import {
   computeFeatures, computeFeaturesAllRotations, releaseFeatures, releaseFeatureList,
   matchBestRotation, getDetectorName, MIN_INLIER_COUNT,
-} from './lib/matcher.js?v=9';
-import { loadEmbedder, embed, cosine, getDevice } from './lib/embedder.js?v=9';
+} from './lib/matcher.js?v=11';
+import { loadEmbedder, embed, cosine, getDevice } from './lib/embedder.js?v=11';
 
 /* ========== 상태 ========== */
 const state = {
@@ -319,52 +319,87 @@ async function runMatching() {
     return;
   }
 
-  // 3) 각 엑셀 이미지 → 전체 사진과 매칭 (AI 유사도 + ORB 회전 매칭 결합)
-  log(`▶ [3단계] 매칭 계산 (${state.pairs.length}건) — ${state.aiReady ? 'AI 유사도 + 상위 후보 ORB 검증' : 'ORB 만'}`);
+  // 3) 각 엑셀 이미지 → 전체 사진과 매칭
+  log(`▶ [3단계] 매칭 계산 (${state.pairs.length}건) — ${useOrbNow ? 'AI 유사도 + ORB 검증' : 'AI 전용(빠름)'}`);
+  await matchAllPairs(useOrbNow);
+  updateMatchStats();
+  sortCards(); // 성공 매칭을 상단으로
+  setMatchProgress(1, `매칭 완료 — 총 ${state.pairs.length}건`);
+  log('━━━━━━━━━━ 매칭 완료 ━━━━━━━━━━', 'dim');
+  $('#btn-reorb').classList.toggle('hidden', useOrbNow); // 이미 ORB 썼으면 재분석 버튼 숨김
+}
+
+/** 한 건(pair) 매칭 계산. AI 임베딩은 pair.qEmb 에 캐시해 재분석 시 재사용. */
+async function matchOnePair(pair, useOrbNow) {
+  let scored;
+  if (state.aiReady) {
+    if (!pair.qEmb) { try { pair.qEmb = await embed(pair.imageDataUrl); } catch (e) {} await tick(); }
+    const qEmb = pair.qEmb;
+    scored = state.photos.map((p, idx) => ({ idx, ai: (qEmb && p.emb) ? cosine(qEmb, p.emb) : 0, score: -1, deg: 0 }));
+    scored.sort((a, b) => b.ai - a.ai);
+    if (useOrbNow && scored.length && scored[0].ai >= 0.5) {
+      const qRot = await computeFeaturesAllRotations(pair.imageDataUrl);
+      await tick();
+      const r = matchBestRotation(state.photos[scored[0].idx].features, qRot);
+      scored[0].score = r.score; scored[0].deg = r.deg;
+      releaseFeatureList(qRot);
+    }
+  } else {
+    // AI 미사용(폴백): 전체 ORB 매칭
+    const qRot = await computeFeaturesAllRotations(pair.imageDataUrl);
+    scored = state.photos.map((p, idx) => { const r = matchBestRotation(p.features, qRot); return { idx, score: r.score, deg: r.deg, ai: null }; });
+    releaseFeatureList(qRot);
+    scored.sort((a, b) => b.score - a.score);
+  }
+  pair.candidates = scored;
+  applyTop(pair, scored[0]);
+}
+
+/** 전체 매칭 루프 + 카드 갱신 + 진행바 */
+async function matchAllPairs(useOrbNow) {
   const N = state.pairs.length;
-  const K = Math.min(5, state.photos.length); // ORB 로 검증할 AI 상위 후보 수
   for (let pi = 0; pi < N; pi++) {
     const pair = state.pairs[pi];
-    let scored;
-
-    if (state.aiReady) {
-      let qEmb = null;
-      try { qEmb = await embed(pair.imageDataUrl); } catch (e) {}
-      await tick(); // 무거운 연산 사이마다 화면 양보 → 멈춤(긴 블로킹) 방지
-      // 1) AI 코사인으로 전체 랭킹 (가벼운 연산)
-      scored = state.photos.map((p, idx) => ({ idx, ai: (qEmb && p.emb) ? cosine(qEmb, p.emb) : 0, score: -1, deg: 0 }));
-      scored.sort((a, b) => b.ai - a.ai);
-      // 2) (옵션) 최상위 AI 후보만 ORB 회전 검증 — 무거운 매칭을 건당 1회로 최소화
-      if (useOrbNow && scored.length && scored[0].ai >= 0.5) {
-        const qRot = await computeFeaturesAllRotations(pair.imageDataUrl);
-        await tick();
-        const r = matchBestRotation(state.photos[scored[0].idx].features, qRot);
-        scored[0].score = r.score; scored[0].deg = r.deg;
-        releaseFeatureList(qRot);
-      }
-    } else {
-      // AI 미사용(폴백): 전체 ORB 매칭
-      const qRot = await computeFeaturesAllRotations(pair.imageDataUrl);
-      scored = state.photos.map((p, idx) => { const r = matchBestRotation(p.features, qRot); return { idx, score: r.score, deg: r.deg, ai: null }; });
-      releaseFeatureList(qRot);
-      scored.sort((a, b) => b.score - a.score);
-    }
-
-    pair.candidates = scored;
-    applyTop(pair, scored[0]);
-
-    const st = pair.auto ? 'ok' : 'warn';
+    await matchOnePair(pair, useOrbNow);
     const rot = pair.matchDeg ? ` ${pair.matchDeg}°` : '';
     const aiTxt = pair.matchAi != null ? `AI ${(pair.matchAi * 100).toFixed(0)}%` : '';
     const orbTxt = pair.maxScore >= 0 ? ` · ORB ${pair.maxScore}점${rot}` : '';
-    log(`  [${pair.code}] ${aiTxt}${orbTxt} ${pair.auto ? '✔' : '(기준 미달)'}`, st);
+    log(`  [${pair.code}] ${aiTxt}${orbTxt} ${pair.auto ? '✔' : '(기준 미달)'}`, pair.auto ? 'ok' : 'warn');
     renderCard(pair);
     setMatchProgress(0.2 + 0.8 * ((pi + 1) / N), `[3/3] 매칭 계산 ${pi + 1}/${N} (${Math.round((pi + 1) / N * 100)}%)`);
     await tick();
   }
+}
+
+/** 성공 매칭을 상단으로 정렬 (그룹 내에서는 원래 행 순서 유지) */
+function sortCards() {
+  const grid = $('#cardgrid');
+  if (!grid) return;
+  const rank = (p) => (p.excluded ? 2 : (p.auto ? 0 : 1)); // 성공 → 수동확정 → 제외
+  const ordered = state.pairs
+    .map((p, i) => ({ p, i }))
+    .sort((a, b) => rank(a.p) - rank(b.p) || a.i - b.i);
+  for (const { p } of ordered) {
+    const c = document.getElementById('card-' + p.id);
+    if (c) grid.appendChild(c); // 순서대로 재배치
+  }
+}
+
+/** ORB 정밀 재분석 — 다운로드/파싱 없이 ORB 검증만 다시 (쿼리 임베딩은 캐시 재사용) */
+async function reanalyzeWithOrb() {
+  if (!state.pairs.length) return;
+  $('#btn-reorb').disabled = true;
+  log('━━━━━━━━━━ ORB 정밀 재분석 ━━━━━━━━━━', 'dim');
+  setMatchProgress(0.05, 'ORB 특징점 준비 중…');
+  // 사진 ORB 특징점 준비 (AI 전용 모드였다면 아직 없음)
+  for (const p of state.photos) { if (!p.features) p.features = await computeFeatures(p.dataUrl); await tick(); }
+  await matchAllPairs(true);
   updateMatchStats();
-  setMatchProgress(1, `매칭 완료 — 총 ${N}건`);
-  log('━━━━━━━━━━ 매칭 완료 ━━━━━━━━━━', 'dim');
+  sortCards();
+  setMatchProgress(1, 'ORB 정밀 재분석 완료');
+  log('✔ ORB 정밀 재분석 완료', 'ok');
+  $('#btn-reorb').disabled = false;
+  $('#btn-reorb').classList.add('hidden');
 }
 
 /** 후보 하나를 대표 매칭으로 반영 + 성공/제외 판정 */
@@ -466,6 +501,7 @@ $('#btn-export').onclick = () => {
 $('#btn-back').onclick = () => goStep(1);
 $('#btn-back2').onclick = () => goStep(2);
 $('#btn-run-export').onclick = runExport;
+$('#btn-reorb').onclick = reanalyzeWithOrb;
 
 async function ensureBgRemover() {
   if (state.bgRemover) return state.bgRemover;
