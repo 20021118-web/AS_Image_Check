@@ -7,21 +7,28 @@
  *   3) @imgly AI 로 배경 제거 → 흰 배경 합성 → {코드}.png ZIP 다운로드
  */
 
-import { parseWorkbook } from './lib/xlsx.js';
+import { parseWorkbook } from './lib/xlsx.js?v=2';
 import {
   computeFeatures, computeFeaturesAllRotations, releaseFeatures, releaseFeatureList,
   matchBestRotation, getDetectorName, MIN_INLIER_COUNT,
-} from './lib/matcher.js';
+} from './lib/matcher.js?v=2';
+import { loadEmbedder, embed, cosine } from './lib/embedder.js?v=2';
 
 /* ========== 상태 ========== */
 const state = {
   excelFiles: [],   // {file, name}
-  photos: [],       // {name, dataUrl, features|null}
-  pairs: [],        // 매칭 대상 (아래 buildPairs 참고)
+  photos: [],       // {name, dataUrl, features|null, emb|null}
+  pairs: [],        // 매칭 대상
   results: [],      // {folder, name, dataUrl}
-  threshold: MIN_INLIER_COUNT,
+  threshold: MIN_INLIER_COUNT, // ORB inlier 기준
+  aiThreshold: 0.83,           // AI 코사인 유사도 기준
+  imgCol: 'D',                 // 이미지 열
+  codeCol: 'E',                // 코드 열
+  startRow: 4,                 // 시작 행
   cvReady: false,
-  bgRemover: null,  // @imgly removeBackground 함수 (지연 로딩)
+  aiReady: false,      // CLIP 임베딩 모델 준비 여부
+  bgRemover: null,     // @imgly removeBackground 함수 (지연 로딩)
+  bgModelReady: false, // 배경제거 모델(가중치) 다운로드 완료 여부
 };
 
 /* ========== 짧은 DOM 헬퍼 ========== */
@@ -42,6 +49,51 @@ function setChip(id, text, cls) {
   chip.classList.remove('ready', 'error');
   if (cls) chip.classList.add(cls);
   chip.lastChild.textContent = ' ' + text;
+}
+
+/* ========== 로딩 오버레이 (모델 다운로드 등 % 표시) ========== */
+function showOverlay(title, sub) {
+  $('#overlay-title').textContent = title;
+  if (sub != null) $('#overlay-sub').textContent = sub;
+  setOverlay(0);
+  $('#overlay').classList.remove('hidden');
+}
+function setOverlay(pct, sub) {
+  pct = Math.max(0, Math.min(100, Math.round(pct)));
+  $('#overlay-bar').style.width = pct + '%';
+  $('#overlay-pct').textContent = pct + '%';
+  if (sub != null) $('#overlay-sub').textContent = sub;
+}
+function hideOverlay() { $('#overlay').classList.add('hidden'); }
+
+/** 여러 파일 다운로드 진행을 loaded/total 합산으로 %(0~100) 계산하는 트래커 */
+function makeProgress() {
+  const files = {};
+  const pct = () => {
+    let l = 0, t = 0;
+    for (const k in files) { l += files[k].loaded; t += files[k].total; }
+    return t > 0 ? (l / t) * 100 : 0;
+  };
+  return {
+    hf(p) { // transformers.js progress_callback
+      if (p && p.file && typeof p.total === 'number' && p.total > 0) {
+        files[p.file] = { loaded: p.loaded || 0, total: p.total };
+      }
+      return pct();
+    },
+    imgly(key, current, total) { // @imgly progress 콜백
+      if (total > 0) files[key] = { loaded: current || 0, total };
+      return pct();
+    },
+    pct,
+  };
+}
+
+/* ========== 매칭 진행바 ========== */
+function setMatchProgress(ratio, label) {
+  const pct = Math.max(0, Math.min(100, Math.round(ratio * 100)));
+  $('#match-bar').style.width = pct + '%';
+  $('#match-label').textContent = label;
 }
 
 /* ========== opencv.js(WASM) 준비 — @techstark/opencv-js 를 ESM 으로 로드 ========== */
@@ -69,7 +121,35 @@ async function loadOpenCv() {
   }
 }
 loadOpenCv();
-setChip('#chip-ai', 'AI 배경제거 (처음 사용 시 로딩)', '');
+setChip('#chip-ai', 'AI 매칭 (매칭 시작 시 로딩)', '');
+
+/* ========== AI 매칭(CLIP) 모델 준비 ========== */
+async function ensureEmbedder() {
+  if (state.aiReady) return true;
+  setChip('#chip-ai', 'AI 매칭 모델 다운로드 중…', '');
+  showOverlay('AI 매칭 모델 다운로드 중…', 'CLIP 이미지 인식 모델 (최초 1회, 수십 MB)');
+  log('▶ AI 매칭 모델(CLIP) 로딩 중… (최초 1회, 수십 MB 다운로드)', 'warn');
+  const prog = makeProgress();
+  try {
+    await loadEmbedder((p) => {
+      const pct = prog.hf(p);
+      setOverlay(pct, p && p.file ? `${p.file} 내려받는 중…` : '모델 준비 중…');
+      const c = Math.floor(pct);
+      if (c % 10 === 0) setChip('#chip-ai', `AI 매칭 모델 ${c}%`, '');
+    });
+    setOverlay(100, '모델 초기화 완료');
+    state.aiReady = true;
+    setChip('#chip-ai', 'AI 매칭 준비됨', 'ready');
+    log('✔ AI 매칭 모델 준비 완료 (CLIP)', 'ok');
+    hideOverlay();
+    return true;
+  } catch (e) {
+    hideOverlay();
+    setChip('#chip-ai', 'AI 매칭 로드 실패 (ORB만 사용)', 'error');
+    log('✖ AI 매칭 모델 로드 실패, ORB 특징점만 사용: ' + e.message, 'bad');
+    return false;
+  }
+}
 
 /* ========== 업로드: 엑셀 ========== */
 function addExcelFiles(files) {
@@ -101,7 +181,7 @@ function addPhotoFiles(files) {
     if (state.photos.some((p) => p.name === f.name)) continue;
     const reader = new FileReader();
     reader.onload = () => {
-      state.photos.push({ name: f.name, dataUrl: reader.result, features: null });
+      state.photos.push({ name: f.name, dataUrl: reader.result, features: null, emb: null });
       renderPhotoList();
     };
     reader.readAsDataURL(f);
@@ -160,24 +240,34 @@ async function runMatching() {
   goStep(2);
   $('#cardgrid').innerHTML = '';
   $('#threshold-label').textContent = state.threshold;
+  $('#ai-threshold-label').textContent = Math.round(state.aiThreshold * 100);
+  setMatchProgress(0, '매칭 준비 중…');
   log('━━━━━━━━━━ 자동 매칭 시작 ━━━━━━━━━━', 'dim');
 
-  // 1) 원본 사진 특징점 계산 (0/90/180/270 회전본 모두)
-  log(`▶ [1단계] 원본 사진 ${state.photos.length}장 특징점 분석 중… (0·90·180·270° 회전 포함)`);
-  for (const p of state.photos) {
+  // 0) AI 매칭 모델 준비 (실패해도 ORB 로 진행)
+  await ensureEmbedder();
+
+  // 1) 원본 사진 분석: ORB 특징점(4방향) + AI 임베딩
+  log(`▶ [1단계] 원본 사진 ${state.photos.length}장 분석 중… (ORB 4방향 + AI 임베딩)`);
+  for (let i = 0; i < state.photos.length; i++) {
+    const p = state.photos[i];
     if (!p.features) p.features = await computeFeaturesAllRotations(p.dataUrl);
+    if (state.aiReady && !p.emb) { try { p.emb = await embed(p.dataUrl); } catch (e) {} }
+    setMatchProgress(0.15 * ((i + 1) / state.photos.length), `[1/3] 원본 사진 분석 ${i + 1}/${state.photos.length}`);
     await tick();
   }
-  log(`  → 분석 완료: ${state.photos.length}장 × 4방향`, 'ok');
+  log(`  → 분석 완료: ${state.photos.length}장`, 'ok');
 
   // 2) 엑셀 파싱 → 매칭 대상 생성
+  setMatchProgress(0.18, '[2/3] 엑셀 분석 중…');
+  const opts = { imgCol: state.imgCol, codeCol: state.codeCol, startRow: state.startRow };
   state.pairs = [];
   let idc = 0;
   for (const ex of state.excelFiles) {
-    log(`▶ [2단계] 엑셀 처리: ${ex.name}`);
+    log(`▶ [2단계] 엑셀 처리: ${ex.name} (이미지 ${state.imgCol}열 · 코드 ${state.codeCol}열 · ${state.startRow}행~)`);
     let sheets;
     try {
-      sheets = await parseWorkbook(ex.file);
+      sheets = await parseWorkbook(ex.file, opts);
     } catch (e) {
       log(`  ✖ 엑셀 읽기 실패: ${e.message}`, 'bad');
       continue;
@@ -200,34 +290,52 @@ async function runMatching() {
     return;
   }
 
-  // 3) 각 엑셀 이미지 → 전체 사진과 매칭
-  log(`▶ [3단계] 매칭 계산 (${state.pairs.length}건, 회전 매칭)…`);
-  for (const pair of state.pairs) {
+  // 3) 각 엑셀 이미지 → 전체 사진과 매칭 (AI 유사도 + ORB 회전 매칭 결합)
+  log(`▶ [3단계] 매칭 계산 (${state.pairs.length}건) — ${state.aiReady ? 'AI 유사도 + ORB' : 'ORB 만'}`);
+  const N = state.pairs.length;
+  for (let pi = 0; pi < N; pi++) {
+    const pair = state.pairs[pi];
     const f = await computeFeatures(pair.imageDataUrl);
-    // 각 사진을 0/90/180/270 돌려가며 가장 잘 맞는 각도의 점수를 취함
+    let qEmb = null;
+    if (state.aiReady) { try { qEmb = await embed(pair.imageDataUrl); } catch (e) {} }
+
     const scored = state.photos.map((p, idx) => {
-      const r = matchBestRotation(f, p.features);
-      return { idx, score: r.score, deg: r.deg };
+      const r = matchBestRotation(f, p.features);       // ORB inlier (최적 회전)
+      const ai = (qEmb && p.emb) ? cosine(qEmb, p.emb) : null; // AI 코사인 유사도
+      return { idx, score: r.score, deg: r.deg, ai };
     });
     releaseFeatures(f);
-    scored.sort((a, b) => b.score - a.score);
+
+    // AI 가 있으면 AI 우선 정렬(동점 시 ORB), 없으면 ORB 정렬
+    scored.sort((a, b) => (state.aiReady ? (b.ai - a.ai) || (b.score - a.score) : b.score - a.score));
     pair.candidates = scored;
-    const top = scored[0] || { idx: -1, score: -1, deg: 0 };
-    pair.maxScore = top.score;
-    pair.matchDeg = top.deg;
-    pair.selectedPhotoIdx = top.idx;
-    pair.auto = pair.maxScore >= state.threshold;
-    // 기준 미달이면 기본은 "제외"로 두되 후보는 유지 (사용자가 수동 확정 가능)
-    pair.excluded = !pair.auto;
+    applyTop(pair, scored[0]);
 
     const st = pair.auto ? 'ok' : 'warn';
-    const rot = top.deg ? ` (${top.deg}° 회전)` : '';
-    log(`  [${pair.folder}/${pair.sheet} 행${pair.row}] ${pair.code} → ${pair.maxScore}점${rot} ${pair.auto ? '✔' : '(기준 미달)'}`, st);
+    const rot = pair.matchDeg ? ` ${pair.matchDeg}°` : '';
+    const aiTxt = pair.matchAi != null ? `AI ${(pair.matchAi * 100).toFixed(0)}% · ` : '';
+    log(`  [${pair.code}] ${aiTxt}ORB ${pair.maxScore}점${rot} ${pair.auto ? '✔' : '(기준 미달)'}`, st);
     renderCard(pair);
+    setMatchProgress(0.2 + 0.8 * ((pi + 1) / N), `[3/3] 매칭 계산 ${pi + 1}/${N} (${Math.round((pi + 1) / N * 100)}%)`);
     await tick();
   }
   updateMatchStats();
+  setMatchProgress(1, `매칭 완료 — 총 ${N}건`);
   log('━━━━━━━━━━ 매칭 완료 ━━━━━━━━━━', 'dim');
+}
+
+/** 후보 하나를 대표 매칭으로 반영 + 성공/제외 판정 */
+function applyTop(pair, top) {
+  top = top || { idx: -1, score: -1, deg: 0, ai: null };
+  pair.selectedPhotoIdx = top.idx;
+  pair.maxScore = top.score;
+  pair.matchDeg = top.deg;
+  pair.matchAi = top.ai;
+  // 성공 기준: AI 유사도 통과 또는 ORB inlier 통과 (둘 중 하나만 강해도 인정)
+  const aiOk = top.ai != null && top.ai >= state.aiThreshold;
+  const orbOk = top.score >= state.threshold;
+  pair.auto = pair.selectedPhotoIdx >= 0 && (aiOk || orbOk);
+  pair.excluded = !pair.auto;
 }
 
 /* ========== 매칭 카드 렌더 ========== */
@@ -249,7 +357,7 @@ function renderCard(pair) {
       <div class="mimg ${photo ? '' : 'empty'}">${photo ? `<img src="${photo.dataUrl}">` : '없음'}</div>
     </div>
     <div class="mcard-foot">
-      <span class="score">유사도 <b>${pair.maxScore < 0 ? 0 : pair.maxScore}</b>점${pair.matchDeg ? ` · <b>${pair.matchDeg}°</b> 회전` : ''}</span>
+      <span class="score">${pair.matchAi != null ? `AI <b>${(pair.matchAi * 100).toFixed(0)}%</b> · ` : ''}ORB <b>${pair.maxScore < 0 ? 0 : pair.maxScore}</b>${pair.matchDeg ? ` · ${pair.matchDeg}°` : ''}</span>
       ${status}
       <button class="link-btn" data-act="toggle-cand">후보 변경</button>
     </div>
@@ -282,13 +390,11 @@ function fillCandidates(pair, row) {
   pair.candidates.forEach((c) => {
     const p = state.photos[c.idx];
     const cand = el('div', 'cand' + (c.idx === pair.selectedPhotoIdx && !pair.excluded ? ' sel' : ''));
-    cand.innerHTML = `<img src="${p.dataUrl}"><small>${c.score}점${c.deg ? ` · ${c.deg}°` : ''}</small>`;
+    const aiTxt = c.ai != null ? `AI ${(c.ai * 100).toFixed(0)}%` : `${c.score}점`;
+    cand.innerHTML = `<img src="${p.dataUrl}"><small>${aiTxt}${c.deg ? ` · ${c.deg}°` : ''}</small>`;
     cand.onclick = () => {
-      pair.selectedPhotoIdx = c.idx;
-      pair.maxScore = c.score;
-      pair.matchDeg = c.deg || 0;
-      pair.excluded = false;
-      pair.auto = c.score >= state.threshold;
+      applyTop(pair, c);
+      pair.excluded = false; // 사용자가 직접 선택하면 포함
       renderCard(pair);
       updateMatchStats();
     };
@@ -364,13 +470,21 @@ async function runExport() {
     let pngDataUrl = photo.dataUrl;
     try {
       if (useBg && state.bgRemover) {
-        const cut = await state.bgRemover(photo.dataUrl, { output: { format: 'image/png' } });
+        const cfg = { output: { format: 'image/png' } };
+        if (!state.bgModelReady) {
+          const prog = makeProgress();
+          showOverlay('AI 배경제거 모델 다운로드 중…', 'ISNet 배경제거 모델 (최초 1회, 수십 MB)');
+          cfg.progress = (key, cur, tot) => setOverlay(prog.imgly(key, cur, tot), '' + key);
+        }
+        const cut = await state.bgRemover(photo.dataUrl, cfg);
+        if (!state.bgModelReady) { state.bgModelReady = true; hideOverlay(); setChip('#chip-ai', 'AI 배경제거 준비됨', 'ready'); }
         pngDataUrl = await compositeWhite(cut);
       } else {
         pngDataUrl = await compositeWhite(photo.dataUrl);
       }
       log(`  ✔ ${label}`, 'ok');
     } catch (e) {
+      hideOverlay();
       log(`  ✖ ${label} 처리 실패: ${e.message}`, 'bad');
       pngDataUrl = await compositeWhite(photo.dataUrl);
     }
@@ -409,10 +523,32 @@ $('#btn-zip').onclick = async () => {
 };
 
 /* ========== 설정 모달 ========== */
-$('#btn-settings').onclick = () => $('#modal-settings').classList.remove('hidden');
+$('#btn-settings').onclick = () => {
+  // 현재 값을 입력창에 반영
+  $('#cfg-imgcol').value = state.imgCol;
+  $('#cfg-codecol').value = state.codeCol;
+  $('#cfg-startrow').value = state.startRow;
+  $('#cfg-aithreshold').value = Math.round(state.aiThreshold * 100);
+  $('#cfg-threshold').value = state.threshold;
+  $('#modal-settings').classList.remove('hidden');
+};
 $('#btn-close-settings').onclick = () => {
+  const colRe = /^[A-Za-z]{1,3}$/;
+  const ic = $('#cfg-imgcol').value.trim().toUpperCase();
+  const cc = $('#cfg-codecol').value.trim().toUpperCase();
+  if (colRe.test(ic)) state.imgCol = ic;
+  if (colRe.test(cc)) state.codeCol = cc;
+  const sr = parseInt($('#cfg-startrow').value, 10);
+  if (sr > 0) state.startRow = sr;
+  const ai = parseInt($('#cfg-aithreshold').value, 10);
+  if (ai > 0 && ai < 100) state.aiThreshold = ai / 100;
   const v = parseInt($('#cfg-threshold').value, 10);
   if (v > 0) state.threshold = v;
+
+  // 안내 라벨 갱신
+  $('#hint-imgcol').textContent = state.imgCol;
+  $('#hint-codecol').textContent = state.codeCol;
+  $('#hint-startrow').textContent = state.startRow;
   $('#modal-settings').classList.add('hidden');
 };
 
