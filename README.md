@@ -68,14 +68,25 @@ python -m http.server 5599
 
 ```
 WebApp/
-├─ index.html      # 화면 구조
-├─ styles.css      # 디자인
-├─ app.js          # 전체 흐름 오케스트레이션 (ES module)
+├─ index.html         # 화면 구조
+├─ styles.css         # 디자인
+├─ app.js             # 전체 흐름 오케스트레이션 (ES module)
 └─ lib/
-   ├─ xlsx.js      # 엑셀 셀 삽입 이미지 + 코드 추출 (열/행 지정 가능)
-   ├─ matcher.js   # OpenCV 강화 ORB 특징점 매칭 (회전·CLAHE·업스케일)
-   └─ embedder.js  # CLIP AI 의미 유사도 매칭
+   ├─ xlsx.js         # 엑셀 셀 삽입 이미지 + 코드 추출 (열/행 지정 가능)
+   ├─ matcher.js      # OpenCV 강화 ORB 특징점 매칭 (회전·CLAHE·업스케일)
+   ├─ embedder.js     # CLIP AI 매칭 (메인 스레드 프록시)
+   └─ embed-worker.js # CLIP 추론을 도는 Web Worker (화면 안 멈추게)
 ```
+
+> ⚠️ 배포 시 `lib/embed-worker.js` 를 반드시 함께 올리세요. 없으면 AI 매칭이 동작하지 않습니다.
+
+## 성능 / 멈춤 방지
+
+- **AI 추론은 Web Worker(별도 스레드)** 에서 실행되어, 매칭 중에도 화면이 멈추지 않습니다.
+- 기본은 **AI 전용(빠름)** 모드입니다. 매칭 중 화면 블로킹이 ~0.1초 수준으로 유지됩니다.
+- **ORB 정밀 검증**(⚙ 설정)은 정확도를 높이지만 OpenCV 계산이 메인 스레드에서 돌아 사진 수가 많으면 느려질 수 있습니다. 느리면 끄세요.
+- 화면에는 원본이 아니라 **작은 썸네일**을 표시해 카드가 많아도 가볍습니다(원본은 내보내기에만 사용).
+- 가능하면 **WebGPU** 로 AI를 가속합니다(미지원 시 자동으로 WASM).
 
 ## 사용 라이브러리 (모두 CDN, 오픈소스)
 
