@@ -229,6 +229,36 @@ body {
 .overlay-sub { font-size: 12px; color: var(--muted); margin-top: 12px; }
 .overlay .progress { height: 10px; }
 
+/* ===== 후보 선택 큰 팝업 ===== */
+.cand-modal { width: 920px; max-width: 94vw; max-height: 90vh; display: flex; flex-direction: column; }
+.cand-modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.cand-modal-head b { font-size: 18px; }
+.cand-modal-body { display: flex; gap: 22px; overflow: hidden; }
+.cand-target { flex: 0 0 300px; }
+.cand-col-label { font-size: 13px; font-weight: 700; color: var(--muted); margin-bottom: 10px; }
+.cand-target-box { width: 300px; height: 300px; border: 1px solid var(--line); border-radius: 12px; background: #fafbfc; display: grid; place-items: center; overflow: hidden; }
+.cand-target-box img { max-width: 100%; max-height: 100%; object-fit: contain; image-rendering: auto; }
+.cand-list-wrap { flex: 1; overflow-y: auto; max-height: 70vh; }
+.cand-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
+.candL { border: 2px solid var(--line); border-radius: 12px; overflow: hidden; cursor: pointer; background: #fff; transition: .12s; }
+.candL:hover { border-color: var(--blue); box-shadow: 0 4px 14px rgba(0,113,188,.15); }
+.candL.sel { border-color: var(--blue); }
+.candL img { width: 100%; height: 180px; object-fit: cover; display: block; }
+.candL-cap { padding: 7px 10px 2px; font-size: 12.5px; font-weight: 700; color: var(--ink); }
+.candL-name { padding: 0 10px 9px; font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.candL.none { display: grid; place-items: center; min-height: 200px; border-style: dashed; color: var(--muted); }
+.candL.none.sel { border-color: var(--bad); color: var(--bad); }
+.candL-x { text-align: center; font-weight: 700; font-size: 14px; }
+.candL-x small { font-weight: 400; font-size: 11px; }
+
+/* ===== 미매칭 코드 요약 ===== */
+.unmatched { margin-top: 18px; border: 1px solid var(--line); border-radius: 12px; padding: 4px 14px; background: #fff; }
+.unmatched > summary { cursor: pointer; font-size: 14px; font-weight: 700; padding: 10px 0; list-style: revert; }
+.unmatched > summary b { color: var(--bad); }
+.unmatched-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 6px 0 10px; }
+.unmatched-actions .hint { margin: 0; }
+#unmatched-text { width: 100%; height: 160px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; resize: vertical; margin-bottom: 12px; background: #fbfdfe; }
+
 /* ===== 반응형 ===== */
 @media (max-width: 760px) {
   .grid-2 { grid-template-columns: 1fr; gap: 20px; }
