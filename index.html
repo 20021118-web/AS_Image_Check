@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AS 부품 이미지 자동 매칭 스튜디오</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+  <link rel="stylesheet" href="styles.css?v=15" />
+  <!-- xlsx 압축 해제용 -->
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <!-- 결과 zip 생성용 (JSZip 재사용) · 파일 저장 -->
+  <script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+  <!-- OpenCV.js(WASM) 매칭 엔진은 app.js 에서 ESM 으로 동적 로드 (@techstark/opencv-js) -->
+
+</head>
+<body>
+  <div class="app">
+    <!-- ===== 헤더 ===== -->
+    <header class="hero">
+      <div class="hero-inner">
+        <div class="brand">
+          <div class="brand-mark">AS</div>
+          <div>
+            <h1>부품 이미지 자동 매칭 스튜디오</h1>
+            <p class="sub">엑셀 부품 리스트 × 원본 사진 &mdash; 특징점 자동 매칭 · AI 배경 제거 · 코드 자동 명명</p>
+          </div>
+        </div>
+        <div class="engines">
+          <span class="chip" id="chip-cv"><span class="dot"></span> 매칭 엔진</span>
+          <span class="chip" id="chip-ai"><span class="dot"></span> AI</span>
+          <button class="ghost-btn" id="btn-settings" title="설정">⚙</button>
+        </div>
+      </div>
+      <div class="stepbar">
+        <div class="step active" data-step="1"><i>1</i> 업로드</div>
+        <div class="step" data-step="2"><i>2</i> 자동 매칭</div>
+        <div class="step" data-step="3"><i>3</i> 배경 제거 · 내보내기</div>
+      </div>
+    </header>
+
+    <main>
+      <!-- ===== STEP 1: 업로드 ===== -->
+      <section class="panel" id="panel-upload">
+        <div class="grid-2">
+          <div>
+            <h2 class="panel-title">① 엑셀 부품 리스트</h2>
+            <p class="hint"><b id="hint-imgcol">D</b>열(부품 이미지) · <b id="hint-codecol">E</b>열(서비스 코드), <b id="hint-startrow">4</b>행부터 읽습니다. 열·시작행은 ⚙ 설정에서 변경. 여러 개 업로드 가능.</p>
+            <label class="dropzone" id="dz-excel">
+              <input type="file" accept=".xlsx" multiple hidden id="in-excel" />
+              <div class="dz-icon">📄</div>
+              <div class="dz-text">엑셀 파일을 끌어다 놓거나 클릭</div>
+              <div class="dz-sub">.xlsx</div>
+            </label>
+            <ul class="filelist" id="list-excel"></ul>
+          </div>
+          <div>
+            <h2 class="panel-title">② 비교할 원본 사진</h2>
+            <p class="hint">고화질 원본 사진들. 엑셀 썸네일과 매칭할 후보가 됩니다.</p>
+            <label class="dropzone" id="dz-photo">
+              <input type="file" accept="image/*" multiple hidden id="in-photo" />
+              <div class="dz-icon">🖼️</div>
+              <div class="dz-text">사진을 끌어다 놓거나 클릭</div>
+              <div class="dz-sub">.jpg · .jpeg · .png · .webp</div>
+            </label>
+            <div class="thumbrow" id="list-photo"></div>
+          </div>
+        </div>
+        <div class="actions-bar">
+          <div class="counts" id="upload-counts">엑셀 0개 · 사진 0장</div>
+          <button class="primary-btn" id="btn-start" disabled>자동 매칭 시작 →</button>
+        </div>
+      </section>
+
+      <!-- ===== STEP 2: 매칭 보드 ===== -->
+      <section class="panel hidden" id="panel-match">
+        <div class="match-head">
+          <div>
+            <h2 class="panel-title">자동 매칭 결과</h2>
+            <p class="hint"><b>AI 의미 유사도</b>와 <b>ORB 특징점</b>을 결합한 자동 매칭 결과입니다. 필요하면 카드에서 직접 바꿀 수 있어요.
+              AI 유사도 <b id="ai-threshold-label">83</b>% 또는 ORB <b id="threshold-label">15</b>점 이상이면 <span class="badge ok">성공</span>.</p>
+          </div>
+          <div class="match-side">
+            <div class="match-stats" id="match-stats"></div>
+            <button class="accent-btn hidden" id="btn-reorb" title="AI 결과가 아쉬우면 ORB 특징점으로 한 번 더 정밀 분석">🔍 ORB 정밀 재분석</button>
+          </div>
+        </div>
+        <div class="progress-wrap" id="match-progress-wrap">
+          <div class="progress"><div class="bar" id="match-bar"></div></div>
+          <div class="progress-label" id="match-label">매칭 준비 중…</div>
+        </div>
+        <div class="match-toolbar">
+          <label class="toggle"><input type="checkbox" id="only-success" /> 성공 항목만 내보내기</label>
+          <div class="spacer"></div>
+          <button class="secondary-btn" id="btn-back">← 업로드로</button>
+          <button class="primary-btn" id="btn-export">배경 제거 · 내보내기 →</button>
+        </div>
+
+        <details class="unmatched" id="unmatched-box">
+          <summary>❌ 매칭 안 된(제외) 부품 코드 <b id="unmatched-count">0</b>개 — 클릭해서 펼치기 · 복사 / 다운로드</summary>
+          <div class="unmatched-actions">
+            <button class="secondary-btn" id="btn-copy-unmatched">📋 복사</button>
+            <button class="secondary-btn" id="btn-csv-unmatched">⬇ 엑셀(CSV) 다운로드</button>
+            <span class="hint">열: 코드 · 엑셀파일 · 시트 · 행 (탭 구분 — 엑셀에 붙여넣기 가능)</span>
+          </div>
+          <textarea id="unmatched-text" readonly spellcheck="false" placeholder="매칭을 실행하면 여기에 제외된 부품 코드가 정리됩니다."></textarea>
+        </details>
+
+        <div class="cardgrid" id="cardgrid"></div>
+      </section>
+
+      <!-- ===== STEP 3: 내보내기 ===== -->
+      <section class="panel hidden" id="panel-export">
+        <h2 class="panel-title">배경 제거 · 내보내기</h2>
+        <p class="hint">확정된 매칭에 대해 AI 배경 제거 후 흰 배경으로 합성하고 <code>{서비스코드}.jpg</code> 로 저장합니다.</p>
+        <div class="progress-wrap">
+          <div class="progress"><div class="bar" id="export-bar"></div></div>
+          <div class="progress-label" id="export-label">대기 중</div>
+        </div>
+        <div class="export-actions">
+          <label class="toggle"><input type="checkbox" id="use-bg" checked /> AI 배경 제거 사용</label>
+          <div class="spacer"></div>
+          <button class="secondary-btn" id="btn-back2">← 매칭으로</button>
+          <button class="primary-btn" id="btn-run-export">처리 시작</button>
+          <button class="primary-btn hidden" id="btn-zip">📦 사진 ZIP 다운로드</button>
+          <button class="primary-btn hidden" id="btn-xlsx">📄 수정 엑셀 다운로드</button>
+        </div>
+        <p class="hint" style="margin-top:10px;">📄 수정 엑셀: 원본 리스트에서 <b>매칭 실패 행의 A열에 "매칭 실패"(빨간 배경)</b>를 기입해 내려받습니다. (열은 ⚙ 설정 "매칭 결과 열"에서 변경)</p>
+        <div class="resultgrid" id="resultgrid"></div>
+      </section>
+    </main>
+
+    <!-- ===== 콘솔 로그 (파이썬 실행창 느낌) ===== -->
+    <aside class="console" id="console">
+      <div class="console-head"><span>실행 로그</span><button id="btn-clearlog" class="ghost-btn sm">지우기</button></div>
+      <div class="console-body" id="console-body"></div>
+    </aside>
+  </div>
+
+  <!-- 후보 선택 큰 팝업 -->
+  <div class="modal hidden" id="modal-cand">
+    <div class="modal-card cand-modal">
+      <div class="cand-modal-head">
+        <div><b id="cand-code"></b> <span class="mcard-meta" id="cand-meta"></span></div>
+        <button class="ghost-btn sm" id="cand-close">닫기 ✕</button>
+      </div>
+      <div class="cand-modal-body">
+        <div class="cand-target">
+          <div class="cand-col-label">엑셀 사진</div>
+          <div class="cand-target-box"><img id="cand-target-img" alt=""></div>
+        </div>
+        <div class="cand-list-wrap">
+          <div class="cand-col-label">후보 사진 — 클릭하면 확정되고 닫힙니다</div>
+          <div class="cand-grid" id="cand-grid"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 설정 모달 -->
+  <div class="modal hidden" id="modal-settings">
+    <div class="modal-card">
+      <h3>설정</h3>
+
+      <div class="field-group-title">엑셀 열 지정</div>
+      <div class="field-row">
+        <label class="field">
+          <span>이미지 열</span>
+          <input type="text" id="cfg-imgcol" value="D" maxlength="3" />
+        </label>
+        <label class="field">
+          <span>코드 열</span>
+          <input type="text" id="cfg-codecol" value="E" maxlength="3" />
+        </label>
+        <label class="field">
+          <span>시작 행</span>
+          <input type="number" id="cfg-startrow" min="1" max="10000" value="4" />
+        </label>
+        <label class="field">
+          <span>매칭 결과 열</span>
+          <input type="text" id="cfg-failcol" value="A" maxlength="3" />
+        </label>
+      </div>
+      <p class="modal-note">엑셀 양식이 다르면 여기서 열(A, B, C…)과 시작 행을 바꾸세요. "매칭 결과 열"은 수정 엑셀에서 "매칭 실패"가 기입될 열입니다.</p>
+
+      <div class="field-group-title">매칭 기준</div>
+      <label class="field">
+        <span>AI 유사도 기준 (%)</span>
+        <input type="number" id="cfg-aithreshold" min="1" max="99" value="83" />
+      </label>
+      <label class="toggle" style="margin: 2px 0 12px;">
+        <input type="checkbox" id="cfg-useorb" /> ORB 정밀 검증 사용 (정확도 ↑, 속도 ↓ — 느리면 끄세요)
+      </label>
+      <label class="field">
+        <span>ORB 특징점 기준 점수 (inlier)</span>
+        <input type="number" id="cfg-threshold" min="1" max="200" value="15" />
+      </label>
+      <p class="modal-note">기본은 <b>AI 전용(빠름)</b>입니다. ORB 정밀 검증을 켜면 더 정확하지만 사진이 많으면 느려질 수 있어요. 둘 중 하나만 넘어도 "성공".</p>
+
+      <div class="modal-actions">
+        <button class="secondary-btn" id="btn-close-settings">저장 · 닫기</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 모델 다운로드/처리 로딩 오버레이 -->
+  <div class="overlay hidden" id="overlay">
+    <div class="overlay-card">
+      <div class="spinner"></div>
+      <div class="overlay-title" id="overlay-title">모델 다운로드 중…</div>
+      <div class="overlay-pct" id="overlay-pct">0%</div>
+      <div class="progress"><div class="bar" id="overlay-bar"></div></div>
+      <div class="overlay-sub" id="overlay-sub">최초 1회만 받으면 이후에는 캐시로 빠르게 실행됩니다.</div>
+    </div>
+  </div>
+
+  <script type="module" src="app.js?v=15"></script>
+</body>
+</html>
