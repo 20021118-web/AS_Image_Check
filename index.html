@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AS 부품 이미지 자동 매칭 스튜디오</title>
   <link rel="preconnect" href="https://cdn.jsdelivr.net" />
-  <link rel="stylesheet" href="styles.css?v=11" />
+  <link rel="stylesheet" href="styles.css?v=15" />
   <!-- xlsx 압축 해제용 -->
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <!-- 결과 zip 생성용 (JSZip 재사용) · 파일 저장 -->
@@ -94,13 +94,24 @@
           <button class="secondary-btn" id="btn-back">← 업로드로</button>
           <button class="primary-btn" id="btn-export">배경 제거 · 내보내기 →</button>
         </div>
+
+        <details class="unmatched" id="unmatched-box">
+          <summary>❌ 매칭 안 된(제외) 부품 코드 <b id="unmatched-count">0</b>개 — 클릭해서 펼치기 · 복사 / 다운로드</summary>
+          <div class="unmatched-actions">
+            <button class="secondary-btn" id="btn-copy-unmatched">📋 복사</button>
+            <button class="secondary-btn" id="btn-csv-unmatched">⬇ 엑셀(CSV) 다운로드</button>
+            <span class="hint">열: 코드 · 엑셀파일 · 시트 · 행 (탭 구분 — 엑셀에 붙여넣기 가능)</span>
+          </div>
+          <textarea id="unmatched-text" readonly spellcheck="false" placeholder="매칭을 실행하면 여기에 제외된 부품 코드가 정리됩니다."></textarea>
+        </details>
+
         <div class="cardgrid" id="cardgrid"></div>
       </section>
 
       <!-- ===== STEP 3: 내보내기 ===== -->
       <section class="panel hidden" id="panel-export">
         <h2 class="panel-title">배경 제거 · 내보내기</h2>
-        <p class="hint">확정된 매칭에 대해 AI 배경 제거 후 흰 배경으로 합성하고 <code>{서비스코드}.png</code> 로 저장합니다.</p>
+        <p class="hint">확정된 매칭에 대해 AI 배경 제거 후 흰 배경으로 합성하고 <code>{서비스코드}.jpg</code> 로 저장합니다.</p>
         <div class="progress-wrap">
           <div class="progress"><div class="bar" id="export-bar"></div></div>
           <div class="progress-label" id="export-label">대기 중</div>
@@ -110,8 +121,10 @@
           <div class="spacer"></div>
           <button class="secondary-btn" id="btn-back2">← 매칭으로</button>
           <button class="primary-btn" id="btn-run-export">처리 시작</button>
-          <button class="primary-btn hidden" id="btn-zip">ZIP 다운로드 ⬇</button>
+          <button class="primary-btn hidden" id="btn-zip">📦 사진 ZIP 다운로드</button>
+          <button class="primary-btn hidden" id="btn-xlsx">📄 수정 엑셀 다운로드</button>
         </div>
+        <p class="hint" style="margin-top:10px;">📄 수정 엑셀: 원본 리스트에서 <b>매칭 실패 행의 A열에 "매칭 실패"(빨간 배경)</b>를 기입해 내려받습니다. (열은 ⚙ 설정 "매칭 결과 열"에서 변경)</p>
         <div class="resultgrid" id="resultgrid"></div>
       </section>
     </main>
@@ -121,6 +134,26 @@
       <div class="console-head"><span>실행 로그</span><button id="btn-clearlog" class="ghost-btn sm">지우기</button></div>
       <div class="console-body" id="console-body"></div>
     </aside>
+  </div>
+
+  <!-- 후보 선택 큰 팝업 -->
+  <div class="modal hidden" id="modal-cand">
+    <div class="modal-card cand-modal">
+      <div class="cand-modal-head">
+        <div><b id="cand-code"></b> <span class="mcard-meta" id="cand-meta"></span></div>
+        <button class="ghost-btn sm" id="cand-close">닫기 ✕</button>
+      </div>
+      <div class="cand-modal-body">
+        <div class="cand-target">
+          <div class="cand-col-label">엑셀 사진</div>
+          <div class="cand-target-box"><img id="cand-target-img" alt=""></div>
+        </div>
+        <div class="cand-list-wrap">
+          <div class="cand-col-label">후보 사진 — 클릭하면 확정되고 닫힙니다</div>
+          <div class="cand-grid" id="cand-grid"></div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- 설정 모달 -->
@@ -142,8 +175,12 @@
           <span>시작 행</span>
           <input type="number" id="cfg-startrow" min="1" max="10000" value="4" />
         </label>
+        <label class="field">
+          <span>매칭 결과 열</span>
+          <input type="text" id="cfg-failcol" value="A" maxlength="3" />
+        </label>
       </div>
-      <p class="modal-note">엑셀 양식이 다르면 여기서 열(A, B, C…)과 시작 행을 바꾸세요. 예: 이미지가 C열, 코드가 D열.</p>
+      <p class="modal-note">엑셀 양식이 다르면 여기서 열(A, B, C…)과 시작 행을 바꾸세요. "매칭 결과 열"은 수정 엑셀에서 "매칭 실패"가 기입될 열입니다.</p>
 
       <div class="field-group-title">매칭 기준</div>
       <label class="field">
@@ -176,6 +213,6 @@
     </div>
   </div>
 
-  <script type="module" src="app.js?v=11"></script>
+  <script type="module" src="app.js?v=15"></script>
 </body>
 </html>
